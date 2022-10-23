@@ -33,6 +33,6 @@ St. No:
 CWL Id :
 
 STUDENT  2
-Name :
-St. No:
-CWL Id :
+Name : Sa Adat Azam Sajeed
+St. No: 98156938    
+CWL Id : ssajeed
