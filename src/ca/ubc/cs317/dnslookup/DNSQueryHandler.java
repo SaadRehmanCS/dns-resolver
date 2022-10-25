@@ -5,6 +5,9 @@ import java.net.*;
 import java.nio.*;
 import java.util.Random;
 import java.util.Set;
+import java.util.Map;
+import java.util.*;
+import java.nio.charset.*;
 
 public class DNSQueryHandler {
 
@@ -108,6 +111,8 @@ public class DNSQueryHandler {
         return new DNSServerResponse(responseMessage, id);
     }
 
+    private static Charset charset = Charset.forName("US-ASCII");
+
     /**
      * Decodes the DNS server response and caches it.
      *
@@ -117,8 +122,165 @@ public class DNSQueryHandler {
      * @return A set of resource records corresponding to the name servers of the response.
      */
     public static Set<ResourceRecord> decodeAndCacheResponse(int transactionID, ByteBuffer responseBuffer,
-                                                             DNSCache cache) {
+                                                             DNSCache cache) throws IOException{
         // TODO (PART 1): Implement this
+        ByteArrayInputStream byteArrayInputStream = new ByteArrayInputStream(responseBuffer.array());
+        DataInputStream dataInputStream = new DataInputStream(byteArrayInputStream);
+
+        // Header Section Flags
+        int QR, OPCode, AA, TC, RD, RA, Z, RCODE = 0;
+        int QDCOUNT, ANCOUNT, NSCOUNT, ARCOUNT = 0;
+        
+        // Question Section
+        ArrayList QNAME = new ArrayList<String>();
+        short QTYPE, QCLASS;
+
+        // Answer Section
+        short TYPE, CLASS = 0;
+        int RDLENGTH, TTL = 0;
+        // NAME TYPE CLASS TTL RDLENGTH RDATA PREFERENCE EXCHANGE
+        try {
+            // int QDCOUNT, NSCOUNT, ARCOUNT = 0;
+
+            // first two bytes reads the qid 
+            int QID = dataInputStream.readShort();
+            // we need to check the qid 
+            if (((QID & 0b1111111111111111) == transactionID) && (byteArrayInputStream.available() < 1025)) {    
+                // next short contains all the flags and status codes
+                short secondHeaderRow = dataInputStream.readShort();
+                // check flags using bit shifting
+                QR = (secondHeaderRow & 0b1000000000000000) >>> 15;
+                if (QR != 1) {
+                    // error, should be a response 
+                }
+                OPCode = (secondHeaderRow & 0b0111100000000000) >>> 11;
+                if (OPCode != 0) {
+                    // error, should be zero        
+                }
+                // AA should be 1 to be authorative
+                AA = (secondHeaderRow & 0b0000010000000000) >>> 10; // need to report
+                TC = (secondHeaderRow & 0b0000001000000000) >>> 9;
+                if (TC != 0) {
+                    // exit and return an error
+                }
+                RD = (secondHeaderRow & 0b0000000100000000) >>> 8;
+                RA = (secondHeaderRow & 0b0000000010000000) >>> 7;
+                if (RA != 1) {
+                    // exit and return an error
+                }
+                Z = (secondHeaderRow & 0b0000000001110000) >>> 4;
+                if (Z != 0) {
+                   // not supposed to be anything but 0
+                }
+                RCODE = secondHeaderRow & 0b0000000000001111;
+                if (RCODE == 0) { // 0b0000000000000000
+                    // no error, continue  
+                } else if (RCODE == 1) { // 0b0000000000000001
+                    // format error
+                } else if (RCODE == 2) { // 0b0000000000000010
+                    // server failure
+                } else if (RCODE == 3) { // 0b0000000000000011
+                    // name error
+                } else if (RCODE == 4) { // 0b0000000000000100
+                    // not implemented error
+                } else if (RCODE == 5) { // 0b0000000000000101
+                    // refused error
+                } else {
+                    // reserved 
+                }
+                // next rows of the DNS header
+                QDCOUNT = dataInputStream.readShort();
+                ANCOUNT = dataInputStream.readShort();
+                NSCOUNT = dataInputStream.readShort();
+                ARCOUNT = dataInputStream.readShort();
+
+                System.out.println(QDCOUNT + " " + ANCOUNT + " " + NSCOUNT + " " + ARCOUNT);
+                // now start reading the DNS question section
+                int len;
+                while ((len = dataInputStream.readByte()) != 0) {
+                    byte[] domain = new byte[len];
+                    for (int i = 0; i < len; i++) {
+                        domain[i] = dataInputStream.readByte();                       
+                    }
+                    QNAME.add(new String(domain, charset));
+                }
+                // System.out.println(QNAME.contains("cs"));
+
+                QTYPE = dataInputStream.readShort();
+                QCLASS = dataInputStream.readShort();
+
+                // now starts reading the DNS answer section
+                // name_being_looked_up  ADDRESS_TYPE  TTL  IP_address
+                Map<String, String> domainToIp = new HashMap<>();
+                byte answerByte = dataInputStream.readByte();
+                ByteArrayOutputStream label = new ByteArrayOutputStream();
+                System.out.println("here123");
+                
+                // not entering loop because answer count is zero
+                for (int i = 0; i < ANCOUNT; i++) {
+                    System.out.println("here");
+
+                    if(answerByte == 0b11000000) {
+                        byte currentByte = dataInputStream.readByte();
+                        byte[] newArray = Arrays.copyOfRange(responseBuffer.array(), currentByte, responseBuffer.array().length);
+                        DataInputStream sectionDataInputStream = new DataInputStream(new ByteArrayInputStream(newArray));
+                        ArrayList<Integer> RDATA = new ArrayList<>();
+                        ArrayList<String> DOMAINS = new ArrayList<>();
+
+                        boolean end = true;
+                        while(end) {
+                            byte nextByte = sectionDataInputStream.readByte();
+                            if(nextByte > 0) {
+                                byte[] currentLabel = new byte[nextByte];
+                                for (int j = 0; j < nextByte; j++) {
+                                    currentLabel[j] = sectionDataInputStream.readByte();
+                                }
+                                label.write(currentLabel);
+                            } else {
+                                TYPE = dataInputStream.readShort();
+                                CLASS = dataInputStream.readShort();
+                                TTL = dataInputStream.readInt();
+                                RDLENGTH = dataInputStream.readShort();
+                                for(int s = 0; s < RDLENGTH; s++) {
+                                    int next = dataInputStream.readByte() & 255;
+                                    RDATA.add(next);
+                                }
+                                end = false;
+                            }
+                
+                            DOMAINS.add(label.toString(charset));
+                            label.reset();
+                        }
+                        StringBuilder ip = new StringBuilder();
+                        StringBuilder domainSb = new StringBuilder();
+                        for (Integer ipPart:RDATA) {
+                            ip.append(ipPart).append(".");
+                        }
+                
+                        for (String domainPart:DOMAINS) {
+                            if(!domainPart.equals("")) {
+                                domainSb.append(domainPart).append(".");
+                            }
+                        }
+                        String domainFinal = domainSb.toString();
+                        String ipFinal = ip.toString();
+                        domainToIp.put(ipFinal.substring(0, ipFinal.length()-1), domainFinal.substring(0, domainFinal.length()-1));
+                        
+                    } else if (answerByte == 0b00000000) {
+                        // System.out.println("It's a label");
+                    }
+                
+                    answerByte = dataInputStream.readByte();
+                }
+                         
+                // domainToIp.forEach((key, value) -> System.out.println(key + " : " + value));
+            } else {
+                // transactionID doesn't match
+            }
+                
+        } catch (IOException e) {
+            throw new IOException(e);
+        }
         return null;
     }
 
