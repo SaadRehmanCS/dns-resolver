@@ -132,16 +132,16 @@ public class DNSQueryHandler {
         int QDCOUNT, ANCOUNT, NSCOUNT, ARCOUNT = 0;
         
         // Question Section
-        ArrayList QNAME = new ArrayList<String>();
+        Map<Integer, String> QNAME = new HashMap<>();
         short QTYPE, QCLASS;
 
         // Answer Section
         short TYPE, CLASS = 0;
         int RDLENGTH, TTL = 0;
+        ArrayList<Integer> RDATA = new ArrayList<>();
+        ArrayList<String> DOMAINS = new ArrayList<>();
         // NAME TYPE CLASS TTL RDLENGTH RDATA PREFERENCE EXCHANGE
         try {
-            // int QDCOUNT, NSCOUNT, ARCOUNT = 0;
-
             // first two bytes reads the qid 
             int QID = dataInputStream.readShort();
             // we need to check the qid 
@@ -196,15 +196,32 @@ public class DNSQueryHandler {
 
                 System.out.println(QDCOUNT + " " + ANCOUNT + " " + NSCOUNT + " " + ARCOUNT);
                 // now start reading the DNS question section
+                int keyLen = 12;
                 int len;
+                int count = 0;
+                Map<Integer, String> temp = new HashMap<>();
                 while ((len = dataInputStream.readByte()) != 0) {
                     byte[] domain = new byte[len];
+                    String asciiString = "";
                     for (int i = 0; i < len; i++) {
                         domain[i] = dataInputStream.readByte();                       
                     }
-                    QNAME.add(new String(domain, charset));
+                    asciiString += new String(domain, charset);
+                    temp.put(keyLen, asciiString);
+                    keyLen += len + 1;
+                }  
+                for (int i = 11; i < keyLen + 1; i++) {
+                    String newKey = "";      
+                    if (temp.get(i) != null) {
+                        for (int j = i; j < keyLen + 1; j++) {
+                            if ((temp.get(j) != null) && (j != keyLen)) {
+                                newKey += temp.get(j) + ".";
+                            }
+                        }
+                        QNAME.put(i, newKey);
+                    }
                 }
-                // System.out.println(QNAME.contains("cs"));
+                System.out.println(QNAME.get(12));
 
                 QTYPE = dataInputStream.readShort();
                 QCLASS = dataInputStream.readShort();
@@ -224,9 +241,6 @@ public class DNSQueryHandler {
                         byte currentByte = dataInputStream.readByte();
                         byte[] newArray = Arrays.copyOfRange(responseBuffer.array(), currentByte, responseBuffer.array().length);
                         DataInputStream sectionDataInputStream = new DataInputStream(new ByteArrayInputStream(newArray));
-                        ArrayList<Integer> RDATA = new ArrayList<>();
-                        ArrayList<String> DOMAINS = new ArrayList<>();
-
                         boolean end = true;
                         while(end) {
                             byte nextByte = sectionDataInputStream.readByte();
@@ -268,8 +282,7 @@ public class DNSQueryHandler {
                         
                     } else if (answerByte == 0b00000000) {
                         // System.out.println("It's a label");
-                    }
-                
+                    }                
                     answerByte = dataInputStream.readByte();
                 }
                          
