@@ -163,7 +163,6 @@ public class DNSLookupService {
      * @return A set of resource records corresponding to the specific query requested.
      */
     private static Set<ResourceRecord> getResults(DNSNode node, int indirectionLevel) {
-
         if (p1Flag) { // For isolating part 1 testing only
             retrieveResultsFromServer(node, rootServer);
             return Collections.emptySet();

@@ -1,12 +1,17 @@
 package ca.ubc.cs317.dnslookup;
 
 import java.io.*;
+<<<<<<< HEAD
 import java.io.DataInputStream;
 import java.io.IOException;
 import java.net.*;
 import java.nio.ByteBuffer;
 import java.nio.charset.Charset;
 import java.util.Arrays;
+=======
+import java.net.*;
+import java.nio.*;
+>>>>>>> master
 import java.util.Random;
 import java.util.Set;
 import java.util.Map;
@@ -56,8 +61,62 @@ public class DNSQueryHandler {
      */
     public static DNSServerResponse buildAndSendQuery(byte[] message, InetAddress server,
                                                       DNSNode node) throws IOException {
-        // TODO (PART 1): Implement this
-        return null;
+        ByteArrayOutputStream outputStream = new ByteArrayOutputStream();
+        DataOutputStream dataStream = new DataOutputStream(outputStream);
+
+        short id = (short)random.nextInt(65535);        
+        // HEADER
+        // -----------------
+        // ID
+        dataStream.writeShort(id);
+        // FLAGS
+        dataStream.writeShort(0);
+        // QDCOUNT
+        dataStream.writeShort(1);
+        // ANCOUNT
+        dataStream.writeShort(0);
+        // NSCOUNT
+        dataStream.writeShort(0);
+        // ARCOUNT
+        dataStream.writeShort(0);
+
+        // QUESTION
+        // -----------------
+        // QNAME
+        String[] labels = node.getHostName().split("\\.");
+        for (int i = 0; i < labels.length; i++) {
+            dataStream.writeByte(labels[i].length());
+            for (int j = 0; j < labels[i].length(); j++) {
+                dataStream.writeByte((byte)labels[i].charAt(j));
+            }
+        }
+        // Null-terminate the qname with 0 byte
+        dataStream.writeByte(0);
+        // QTYPE
+        dataStream.writeShort((short)node.getType().getCode());
+        // QCLASS
+        dataStream.writeShort(1);
+
+        // Convert datastream to byte array
+        message = outputStream.toByteArray();
+
+        // Send the query
+        DatagramPacket requestPacket = new DatagramPacket(message, message.length, server, DEFAULT_DNS_PORT);
+        socket.send(requestPacket);
+
+        // Should receive query here
+        byte[] response = new byte[1024];
+        DatagramPacket responsePacket = new DatagramPacket(response, response.length);
+        try {
+            socket.receive(responsePacket);
+        } catch (SocketTimeoutException e) {
+            // If the query times out, re-send it one more time before failing
+            socket.send(requestPacket);
+            socket.receive(responsePacket);
+        }
+        
+        ByteBuffer responseMessage = ByteBuffer.wrap(response);
+        return new DNSServerResponse(responseMessage, id);
     }
 
     private static Charset charset = Charset.forName("US-ASCII");
