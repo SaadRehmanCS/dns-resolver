@@ -132,7 +132,7 @@ public class DNSQueryHandler {
         int QDCOUNT, ANCOUNT, NSCOUNT, ARCOUNT = 0;
         
         // Question Section
-        String QNAME = "";
+        ArrayList QNAME = new ArrayList<String>();
         short QTYPE, QCLASS;
 
         // Answer Section
@@ -200,11 +200,11 @@ public class DNSQueryHandler {
                 while ((len = dataInputStream.readByte()) != 0) {
                     byte[] domain = new byte[len];
                     for (int i = 0; i < len; i++) {
-                        domain[i] = dataInputStream.readByte();
+                        domain[i] = dataInputStream.readByte();                       
                     }
-                    QNAME += new String(domain, charset);
+                    QNAME.add(new String(domain, charset));
                 }
-                System.out.println(QNAME);
+                // System.out.println(QNAME.contains("cs"));
 
                 QTYPE = dataInputStream.readShort();
                 QCLASS = dataInputStream.readShort();
@@ -213,7 +213,6 @@ public class DNSQueryHandler {
                 // name_being_looked_up  ADDRESS_TYPE  TTL  IP_address
                 Map<String, String> domainToIp = new HashMap<>();
                 byte answerByte = dataInputStream.readByte();
-                int c0bits = (answerByte & 0b11000000) >>> 6;
                 ByteArrayOutputStream label = new ByteArrayOutputStream();
                 System.out.println("here123");
                 
@@ -221,7 +220,7 @@ public class DNSQueryHandler {
                 for (int i = 0; i < ANCOUNT; i++) {
                     System.out.println("here");
 
-                    if(c0bits == 3) {
+                    if(answerByte == 0b11000000) {
                         byte currentByte = dataInputStream.readByte();
                         byte[] newArray = Arrays.copyOfRange(responseBuffer.array(), currentByte, responseBuffer.array().length);
                         DataInputStream sectionDataInputStream = new DataInputStream(new ByteArrayInputStream(newArray));
@@ -267,12 +266,11 @@ public class DNSQueryHandler {
                         String ipFinal = ip.toString();
                         domainToIp.put(ipFinal.substring(0, ipFinal.length()-1), domainFinal.substring(0, domainFinal.length()-1));
                         
-                    } else if (c0bits == 0) {
+                    } else if (answerByte == 0b00000000) {
                         // System.out.println("It's a label");
                     }
                 
-                    c0bits = dataInputStream.readByte();
-                    c0bits = (c0bits & 0b11000000) >>> 6;
+                    answerByte = dataInputStream.readByte();
                 }
                          
                 // domainToIp.forEach((key, value) -> System.out.println(key + " : " + value));
