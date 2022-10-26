@@ -113,6 +113,30 @@ public class DNSQueryHandler {
 
     private static Charset charset = Charset.forName("US-ASCII");
 
+    private static void pointer(ByteBuffer responseBuffer, byte offset, ArrayList<Byte> bytesArray) {
+
+        ByteArrayInputStream byteArrayInputStream = new ByteArrayInputStream(responseBuffer.array());
+        DataInputStream dataInputStream = new DataInputStream(byteArrayInputStream);
+        try {
+            for (byte i = 0; i < offset; i++) {
+                dataInputStream.readByte();
+            }
+            byte currentByte = dataInputStream.readByte();
+            while(currentByte != 0) {
+                if (currentByte == 0b11000000) {
+                    pointer(responseBuffer, dataInputStream.readByte(), bytesArray);
+                }
+                bytesArray.add(currentByte);
+                currentByte = dataInputStream.readByte();
+            }
+                    
+        } catch (IOException e) {
+            
+        }
+        
+    }
+
+//     private static 
     /**
      * Decodes the DNS server response and caches it.
      *
@@ -122,30 +146,31 @@ public class DNSQueryHandler {
      * @return A set of resource records corresponding to the name servers of the response.
      */
     public static Set<ResourceRecord> decodeAndCacheResponse(int transactionID, ByteBuffer responseBuffer,
-                                                             DNSCache cache) throws IOException{
+                                                             DNSCache cache) {
         // TODO (PART 1): Implement this
         ByteArrayInputStream byteArrayInputStream = new ByteArrayInputStream(responseBuffer.array());
         DataInputStream dataInputStream = new DataInputStream(byteArrayInputStream);
+
+        //return type
+        Set<ResourceRecord> allRecords = new HashSet<>();
 
         // Header Section Flags
         int QR, OPCode, AA, TC, RD, RA, Z, RCODE = 0;
         int QDCOUNT, ANCOUNT, NSCOUNT, ARCOUNT = 0;
         
         // Question Section
-        Map<Integer, String> QNAME = new HashMap<>();
+        // Map<Integer, String> QNAME = new HashMap<>();
         short QTYPE, QCLASS;
 
         // Answer Section
         short TYPE, CLASS = 0;
         int RDLENGTH, TTL = 0;
-        ArrayList<Integer> RDATA = new ArrayList<>();
-        ArrayList<String> DOMAINS = new ArrayList<>();
-        // NAME TYPE CLASS TTL RDLENGTH RDATA PREFERENCE EXCHANGE
+
         try {
             // first two bytes reads the qid 
             int QID = dataInputStream.readShort();
             // we need to check the qid 
-            if (((QID & 0b1111111111111111) == transactionID) && (byteArrayInputStream.available() < 1025)) {    
+            if ((QID & 0b1111111111111111) == transactionID) {    
                 // next short contains all the flags and status codes
                 short secondHeaderRow = dataInputStream.readShort();
                 // check flags using bit shifting
@@ -193,50 +218,45 @@ public class DNSQueryHandler {
                 ANCOUNT = dataInputStream.readShort();
                 NSCOUNT = dataInputStream.readShort();
                 ARCOUNT = dataInputStream.readShort();
-
-                System.out.println(QDCOUNT + " " + ANCOUNT + " " + NSCOUNT + " " + ARCOUNT);
+                System.out.println(QDCOUNT + " " + ANCOUNT + " " + NSCOUNT + " " + ARCOUNT + " " + RCODE);
                 // now start reading the DNS question section
-                int keyLen = 12;
-                int len;
-                int count = 0;
-                Map<Integer, String> temp = new HashMap<>();
+                // int len;
+                // int keyLen = 12;
+                // Map<Integer, String> temp = new HashMap<>();
+                // Map<Integer, Byte> pointer = new HashMap<>();
+                byte[] QNAME;
                 while ((len = dataInputStream.readByte()) != 0) {
-                    byte[] domain = new byte[len];
-                    String asciiString = "";
+                    QNAME = new byte[len];
+                    // String asciiString = "";
                     for (int i = 0; i < len; i++) {
-                        domain[i] = dataInputStream.readByte();                       
+                        QNAME[i] = dataInputStream.readByte();                      
                     }
-                    asciiString += new String(domain, charset);
-                    temp.put(keyLen, asciiString);
-                    keyLen += len + 1;
-                }  
-                for (int i = 11; i < keyLen + 1; i++) {
-                    String newKey = "";      
-                    if (temp.get(i) != null) {
-                        for (int j = i; j < keyLen + 1; j++) {
-                            if ((temp.get(j) != null) && (j != keyLen)) {
-                                newKey += temp.get(j) + ".";
-                            }
-                        }
-                        QNAME.put(i, newKey);
-                    }
+                    // asciiString += new String(domain, charset);
+                    // temp.put(keyLen, asciiString);
+                    // keyLen += len + 1;
+                    // QNAME = new String(domain, charset);
                 }
-                System.out.println(QNAME.get(12));
 
+                // for (int i = 11; i < keyLen + 1; i++) {
+                //     String newVal = "";
+                //     if (temp.get(i) != null) {
+                //         for (int j = i; j < keyLen + 1; j++) {
+                //             if ((temp.get(j) != null) && (j != keyLen)) {
+                //                 newVal += temp.get(j) + ".";
+                //             }
+                //         }
+                //         newVal = newVal.substring(0,newVal.length()-1);
+                //         QNAME.put(i, newVal);
+                //     }
+                // }
                 QTYPE = dataInputStream.readShort();
                 QCLASS = dataInputStream.readShort();
 
                 // now starts reading the DNS answer section
                 // name_being_looked_up  ADDRESS_TYPE  TTL  IP_address
-                Map<String, String> domainToIp = new HashMap<>();
-                byte answerByte = dataInputStream.readByte();
-                ByteArrayOutputStream label = new ByteArrayOutputStream();
-                System.out.println("here123");
-                
+                byte answerByte = dataInputStream.readByte();                
                 // not entering loop because answer count is zero
                 for (int i = 0; i < ANCOUNT; i++) {
-                    System.out.println("here");
-
                     if(answerByte == 0b11000000) {
                         byte currentByte = dataInputStream.readByte();
                         byte[] newArray = Arrays.copyOfRange(responseBuffer.array(), currentByte, responseBuffer.array().length);
@@ -249,50 +269,49 @@ public class DNSQueryHandler {
                                 for (int j = 0; j < nextByte; j++) {
                                     currentLabel[j] = sectionDataInputStream.readByte();
                                 }
-                                label.write(currentLabel);
                             } else {
                                 TYPE = dataInputStream.readShort();
                                 CLASS = dataInputStream.readShort();
                                 TTL = dataInputStream.readInt();
                                 RDLENGTH = dataInputStream.readShort();
-                                for(int s = 0; s < RDLENGTH; s++) {
-                                    int next = dataInputStream.readByte() & 255;
-                                    RDATA.add(next);
+                                String textResult = "";
+                                InetAddress addr = InetAddress.getByAddress(new byte[] {});
+                                if ((TYPE == 0x0001) || (TYPE == 0x001c)) {
+                                    // A record                  AAAA record
+                                    byte[] ipAddr = new byte[RDLENGTH];
+                                    for (int z = 0; i < RDLENGTH; z++) {
+                                        ipAddr[z] = dataInputStream.readByte();
+                                    }
+                                    addr = InetAddress.getByAddress(ipAddr);
+                                    
+                                } else if ((TYPE == 0x0005) || (TYPE == 0x0002)) {
+                                    //       CNAME                NAME server               
+                                    for (int z = 0; i < RDLENGTH; z++) {
+                                        byte currByte = dataInputStream.readByte();
+                                        // private static void pointer(ByteBuffer responseBuffer, byte offset, ArrayList<Byte> bytesArray
+                                        if (currByte == 0b11000000) {
+                                            byte offset = dataInputStream.nextByte();
+                                            ArrayList<Byte> bytesArray;
+                                            pointer(responseBuffer, offset, bytesArray);
+                                        } else {
+                                            textResult += currByte;
+                                        }                                   
+                                    }
+                                } else {
+                                    // unknown
                                 }
                                 end = false;
                             }
-                
-                            DOMAINS.add(label.toString(charset));
-                            label.reset();
-                        }
-                        StringBuilder ip = new StringBuilder();
-                        StringBuilder domainSb = new StringBuilder();
-                        for (Integer ipPart:RDATA) {
-                            ip.append(ipPart).append(".");
-                        }
-                
-                        for (String domainPart:DOMAINS) {
-                            if(!domainPart.equals("")) {
-                                domainSb.append(domainPart).append(".");
-                            }
-                        }
-                        String domainFinal = domainSb.toString();
-                        String ipFinal = ip.toString();
-                        domainToIp.put(ipFinal.substring(0, ipFinal.length()-1), domainFinal.substring(0, domainFinal.length()-1));
-                        
-                    } else if (answerByte == 0b00000000) {
-                        // System.out.println("It's a label");
-                    }                
+                        }                        
+                    }               
                     answerByte = dataInputStream.readByte();
-                }
-                         
-                // domainToIp.forEach((key, value) -> System.out.println(key + " : " + value));
+                }                       
             } else {
                 // transactionID doesn't match
             }
                 
         } catch (IOException e) {
-            throw new IOException(e);
+            // no bytes to read
         }
         return null;
     }
