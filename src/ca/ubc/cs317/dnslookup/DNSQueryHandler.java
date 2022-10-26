@@ -106,15 +106,14 @@ public class DNSQueryHandler {
             socket.send(requestPacket);
             socket.receive(responsePacket);
         }
-        
+
         ByteBuffer responseMessage = ByteBuffer.wrap(response);
         return new DNSServerResponse(responseMessage, id);
     }
 
-    private static Charset charset = Charset.forName("US-ASCII");
-
-    private static void pointer(ByteBuffer responseBuffer, byte offset, ArrayList<Byte> bytesArray) {
-
+    // Call this method when encountering a pointer in the response. It will dereference each nested
+    // pointer and store the values into the array. 
+    private static void flattenPointersAndCollectBytes(ByteBuffer responseBuffer, byte offset, List<Byte> bytesArray) {
         ByteArrayInputStream byteArrayInputStream = new ByteArrayInputStream(responseBuffer.array());
         DataInputStream dataInputStream = new DataInputStream(byteArrayInputStream);
         try {
@@ -122,21 +121,89 @@ public class DNSQueryHandler {
                 dataInputStream.readByte();
             }
             byte currentByte = dataInputStream.readByte();
-            while(currentByte != 0) {
-                if (currentByte == 0b11000000) {
-                    pointer(responseBuffer, dataInputStream.readByte(), bytesArray);
+            while(currentByte != (byte)0) {
+                if (currentByte == (byte)0xc0) {
+                    flattenPointersAndCollectBytes(responseBuffer, dataInputStream.readByte(), bytesArray);
+                    break;
+                } else {
+                    bytesArray.add(currentByte);
                 }
-                bytesArray.add(currentByte);
                 currentByte = dataInputStream.readByte();
             }
-                    
         } catch (IOException e) {
-            
+            // TODO: does it do something here?
         }
-        
     }
 
-//     private static 
+
+    // Given a list of bytes such as 03 77 77 77 02 65 34, convert them all into a domain
+    // such as www.cs
+    public static String convertBytesToFDQN(List<Byte> list) {
+        String domain = "";
+        if (list.size() == 0) {
+            return domain;
+        }
+
+        byte wordLength = list.get(0);
+        for (int i = 0; i < list.size() && list.get(i) != 0; i++) {
+            int currVal = i;
+            for (int j = i+1; j < wordLength+currVal+1; j++) {
+                domain += (char)list.get(j).byteValue();
+                i++;
+            }
+            if (i < list.size()-1 && list.get(i+1) != 0) {
+                domain += ".";
+                wordLength = list.get(i+1);
+            }
+        }
+        return domain;
+    } 
+
+    public static ResourceRecord createResourceRecord(DataInputStream dataInputStream, ByteBuffer responseBuffer) throws IOException {
+        byte answerByte = dataInputStream.readByte();
+        String name = "";
+        if (answerByte == (byte)0xc0) {
+            List<Byte> bytes = new ArrayList<>();
+            flattenPointersAndCollectBytes(responseBuffer, dataInputStream.readByte(), bytes);
+            name = convertBytesToFDQN(bytes);
+        }
+        
+        short TYPE = dataInputStream.readShort();
+        short CLASS = dataInputStream.readShort();
+        int TTL = dataInputStream.readInt();
+        int RDLENGTH = dataInputStream.readShort();
+
+        // RDATA
+        String textResult = "";
+        InetAddress addr = null;
+        if (RecordType.getByCode(TYPE) == RecordType.A || RecordType.getByCode(TYPE) == RecordType.AAAA) {
+            byte[] ipAddr = new byte[RDLENGTH];
+            for (int z = 0; z < RDLENGTH; z++) {
+                ipAddr[z] = dataInputStream.readByte();
+            }
+
+            addr = InetAddress.getByAddress(ipAddr);
+            return new ResourceRecord(name, RecordType.getByCode(TYPE), TTL, addr);
+        } else if (RecordType.getByCode(TYPE) == RecordType.CNAME || RecordType.getByCode(TYPE) == RecordType.NS) {
+            ArrayList<Byte> bytesArray = new ArrayList<>();
+
+            for (int z = 0; z < RDLENGTH; z++) {
+                byte currByte = dataInputStream.readByte();
+                if (currByte == (byte)0xc0) {
+                    byte offset = dataInputStream.readByte();
+                    flattenPointersAndCollectBytes(responseBuffer, offset, bytesArray);
+                    z++;
+                } else {
+                    bytesArray.add(currByte);
+                }                            
+            }
+            textResult += convertBytesToFDQN(bytesArray);
+            return new ResourceRecord(name, RecordType.getByCode(TYPE), TTL, textResult);
+        }
+        
+        return null;
+    }
+
     /**
      * Decodes the DNS server response and caches it.
      *
@@ -147,7 +214,6 @@ public class DNSQueryHandler {
      */
     public static Set<ResourceRecord> decodeAndCacheResponse(int transactionID, ByteBuffer responseBuffer,
                                                              DNSCache cache) {
-        // TODO (PART 1): Implement this
         ByteArrayInputStream byteArrayInputStream = new ByteArrayInputStream(responseBuffer.array());
         DataInputStream dataInputStream = new DataInputStream(byteArrayInputStream);
 
@@ -159,161 +225,76 @@ public class DNSQueryHandler {
         int QDCOUNT, ANCOUNT, NSCOUNT, ARCOUNT = 0;
         
         // Question Section
-        // Map<Integer, String> QNAME = new HashMap<>();
         short QTYPE, QCLASS;
 
-        // Answer Section
-        short TYPE, CLASS = 0;
-        int RDLENGTH, TTL = 0;
-
         try {
-            // first two bytes reads the qid 
-            int QID = dataInputStream.readShort();
-            // we need to check the qid 
-            if ((QID & 0b1111111111111111) == transactionID) {    
-                // next short contains all the flags and status codes
-                short secondHeaderRow = dataInputStream.readShort();
-                // check flags using bit shifting
-                QR = (secondHeaderRow & 0b1000000000000000) >>> 15;
-                if (QR != 1) {
-                    // error, should be a response 
-                }
-                OPCode = (secondHeaderRow & 0b0111100000000000) >>> 11;
-                if (OPCode != 0) {
-                    // error, should be zero        
-                }
-                // AA should be 1 to be authorative
-                AA = (secondHeaderRow & 0b0000010000000000) >>> 10; // need to report
-                TC = (secondHeaderRow & 0b0000001000000000) >>> 9;
-                if (TC != 0) {
-                    // exit and return an error
-                }
-                RD = (secondHeaderRow & 0b0000000100000000) >>> 8;
-                RA = (secondHeaderRow & 0b0000000010000000) >>> 7;
-                if (RA != 1) {
-                    // exit and return an error
-                }
-                Z = (secondHeaderRow & 0b0000000001110000) >>> 4;
-                if (Z != 0) {
-                   // not supposed to be anything but 0
-                }
-                RCODE = secondHeaderRow & 0b0000000000001111;
-                if (RCODE == 0) { // 0b0000000000000000
-                    // no error, continue  
-                } else if (RCODE == 1) { // 0b0000000000000001
-                    // format error
-                } else if (RCODE == 2) { // 0b0000000000000010
-                    // server failure
-                } else if (RCODE == 3) { // 0b0000000000000011
-                    // name error
-                } else if (RCODE == 4) { // 0b0000000000000100
-                    // not implemented error
-                } else if (RCODE == 5) { // 0b0000000000000101
-                    // refused error
-                } else {
-                    // reserved 
-                }
-                // next rows of the DNS header
-                QDCOUNT = dataInputStream.readShort();
-                ANCOUNT = dataInputStream.readShort();
-                NSCOUNT = dataInputStream.readShort();
-                ARCOUNT = dataInputStream.readShort();
-                System.out.println(QDCOUNT + " " + ANCOUNT + " " + NSCOUNT + " " + ARCOUNT + " " + RCODE);
-                // now start reading the DNS question section
-                // int len;
-                // int keyLen = 12;
-                // Map<Integer, String> temp = new HashMap<>();
-                // Map<Integer, Byte> pointer = new HashMap<>();
-                byte[] QNAME;
-                while ((len = dataInputStream.readByte()) != 0) {
-                    QNAME = new byte[len];
-                    // String asciiString = "";
-                    for (int i = 0; i < len; i++) {
-                        QNAME[i] = dataInputStream.readByte();                      
-                    }
-                    // asciiString += new String(domain, charset);
-                    // temp.put(keyLen, asciiString);
-                    // keyLen += len + 1;
-                    // QNAME = new String(domain, charset);
-                }
+            short responseID = dataInputStream.readShort();
 
-                // for (int i = 11; i < keyLen + 1; i++) {
-                //     String newVal = "";
-                //     if (temp.get(i) != null) {
-                //         for (int j = i; j < keyLen + 1; j++) {
-                //             if ((temp.get(j) != null) && (j != keyLen)) {
-                //                 newVal += temp.get(j) + ".";
-                //             }
-                //         }
-                //         newVal = newVal.substring(0,newVal.length()-1);
-                //         QNAME.put(i, newVal);
-                //     }
-                // }
-                QTYPE = dataInputStream.readShort();
-                QCLASS = dataInputStream.readShort();
-
-                // now starts reading the DNS answer section
-                // name_being_looked_up  ADDRESS_TYPE  TTL  IP_address
-                byte answerByte = dataInputStream.readByte();                
-                // not entering loop because answer count is zero
-                for (int i = 0; i < ANCOUNT; i++) {
-                    if(answerByte == 0b11000000) {
-                        byte currentByte = dataInputStream.readByte();
-                        byte[] newArray = Arrays.copyOfRange(responseBuffer.array(), currentByte, responseBuffer.array().length);
-                        DataInputStream sectionDataInputStream = new DataInputStream(new ByteArrayInputStream(newArray));
-                        boolean end = true;
-                        while(end) {
-                            byte nextByte = sectionDataInputStream.readByte();
-                            if(nextByte > 0) {
-                                byte[] currentLabel = new byte[nextByte];
-                                for (int j = 0; j < nextByte; j++) {
-                                    currentLabel[j] = sectionDataInputStream.readByte();
-                                }
-                            } else {
-                                TYPE = dataInputStream.readShort();
-                                CLASS = dataInputStream.readShort();
-                                TTL = dataInputStream.readInt();
-                                RDLENGTH = dataInputStream.readShort();
-                                String textResult = "";
-                                InetAddress addr = InetAddress.getByAddress(new byte[] {});
-                                if ((TYPE == 0x0001) || (TYPE == 0x001c)) {
-                                    // A record                  AAAA record
-                                    byte[] ipAddr = new byte[RDLENGTH];
-                                    for (int z = 0; i < RDLENGTH; z++) {
-                                        ipAddr[z] = dataInputStream.readByte();
-                                    }
-                                    addr = InetAddress.getByAddress(ipAddr);
-                                    
-                                } else if ((TYPE == 0x0005) || (TYPE == 0x0002)) {
-                                    //       CNAME                NAME server               
-                                    for (int z = 0; i < RDLENGTH; z++) {
-                                        byte currByte = dataInputStream.readByte();
-                                        // private static void pointer(ByteBuffer responseBuffer, byte offset, ArrayList<Byte> bytesArray
-                                        if (currByte == 0b11000000) {
-                                            byte offset = dataInputStream.nextByte();
-                                            ArrayList<Byte> bytesArray;
-                                            pointer(responseBuffer, offset, bytesArray);
-                                        } else {
-                                            textResult += currByte;
-                                        }                                   
-                                    }
-                                } else {
-                                    // unknown
-                                }
-                                end = false;
-                            }
-                        }                        
-                    }               
-                    answerByte = dataInputStream.readByte();
-                }                       
-            } else {
-                // transactionID doesn't match
+            // transactionID and the ID from response must match or else we ignore this query
+            if ((short)transactionID != responseID) {
+                return allRecords;
             }
-                
+            // next short contains all the flags and status codes
+            short secondHeaderRow = dataInputStream.readShort();
+            // check flags using bit shifting
+            QR = (secondHeaderRow & 0b1000000000000000) >>> 15;
+            
+            OPCode = (secondHeaderRow & 0b0111100000000000) >>> 11;
+            
+            // AA should be 1 to be authorative
+            AA = (secondHeaderRow & 0b0000010000000000) >>> 10; // need to report
+            TC = (secondHeaderRow & 0b0000001000000000) >>> 9;
+            
+            RD = (secondHeaderRow & 0b0000000100000000) >>> 8;
+            RA = (secondHeaderRow & 0b0000000010000000) >>> 7;
+            
+            Z = (secondHeaderRow & 0b0000000001110000) >>> 4;
+            RCODE = secondHeaderRow & 0b0000000000001111;
+            if (QR != 1 || OPCode != 0 || TC != 0 || Z != 0 || RCODE != 0) {
+                return allRecords;
+            }
+
+            // next rows of the DNS header
+            QDCOUNT = dataInputStream.readShort();
+            ANCOUNT = dataInputStream.readShort();
+            NSCOUNT = dataInputStream.readShort();
+            ARCOUNT = dataInputStream.readShort();
+
+            // Read through the QUESTION
+            while (dataInputStream.readByte() != 0) {}
+
+            QTYPE = dataInputStream.readShort();
+            QCLASS = dataInputStream.readShort();
+            // now starts reading the DNS answer section
+            
+            // Iterate over all the RR's. Each iteration consists of looking at one
+            // RR, and storing it into allRecords at the end.
+
+            // Create all ANSWER RR's
+            for (int i = 0; i < ANCOUNT; i++) {
+                ResourceRecord answerRecord = createResourceRecord(dataInputStream, responseBuffer);
+                allRecords.add(answerRecord);
+                cache.addResult(answerRecord);
+            }
+
+            // Create all AUTHORITY RR's
+            for (int i = 0; i < NSCOUNT; i++) {
+                ResourceRecord authorityRecord = createResourceRecord(dataInputStream, responseBuffer);
+                allRecords.add(authorityRecord);
+                cache.addResult(authorityRecord);
+            }
+
+            // Create all ADDITIONAL RR's
+            for (int i = 0; i < ARCOUNT; i++) {
+                ResourceRecord additionalRecord = createResourceRecord(dataInputStream, responseBuffer);
+                allRecords.add(additionalRecord);
+                cache.addResult(additionalRecord);
+            }
         } catch (IOException e) {
             // no bytes to read
         }
-        return null;
+
+        return allRecords;
     }
 
     /**
