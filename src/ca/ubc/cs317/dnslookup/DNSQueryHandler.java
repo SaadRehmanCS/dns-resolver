@@ -92,6 +92,10 @@ public class DNSQueryHandler {
         // Convert datastream to byte array
         message = outputStream.toByteArray();
 
+        if (verboseTracing) {
+            System.out.print("\n\n");
+            System.out.println("Query ID     "+ id + " " + node.getHostName() + " " + node.getType() + " --> " + server.getHostAddress());
+        }
         // Send the query
         DatagramPacket requestPacket = new DatagramPacket(message, message.length, server, DEFAULT_DNS_PORT);
         socket.send(requestPacket);
@@ -102,7 +106,11 @@ public class DNSQueryHandler {
         try {
             socket.receive(responsePacket);
         } catch (SocketTimeoutException e) {
-            // If the query times out, re-send it one more time before failing
+            // If the query times out, re-send it one more time before failing    
+            if (verboseTracing) {
+                System.out.print("\n\n");
+                System.out.println("Query ID     "+ id + " " + node.getHostName() + " " + node.getType() + " --> " + server.getHostAddress());
+            }       
             socket.send(requestPacket);
             socket.receive(responsePacket);
         }
@@ -183,7 +191,9 @@ public class DNSQueryHandler {
             }
 
             addr = InetAddress.getByAddress(ipAddr);
-            return new ResourceRecord(name, RecordType.getByCode(TYPE), TTL, addr);
+            ResourceRecord newRecord = new ResourceRecord(name, RecordType.getByCode(TYPE), TTL, addr);
+            verbosePrintResourceRecord(newRecord, TYPE);
+            return newRecord;
         } else if (RecordType.getByCode(TYPE) == RecordType.CNAME || RecordType.getByCode(TYPE) == RecordType.NS) {
             ArrayList<Byte> bytesArray = new ArrayList<>();
 
@@ -198,7 +208,9 @@ public class DNSQueryHandler {
                 }                            
             }
             textResult += convertBytesToFDQN(bytesArray);
-            return new ResourceRecord(name, RecordType.getByCode(TYPE), TTL, textResult);
+            ResourceRecord newRecord = new ResourceRecord(name, RecordType.getByCode(TYPE), TTL, textResult);
+            verbosePrintResourceRecord(newRecord, TYPE);
+            return newRecord;
         }
         
         return null;
@@ -234,6 +246,7 @@ public class DNSQueryHandler {
             if ((short)transactionID != responseID) {
                 return allRecords;
             }
+
             // next short contains all the flags and status codes
             short secondHeaderRow = dataInputStream.readShort();
             // check flags using bit shifting
@@ -269,15 +282,24 @@ public class DNSQueryHandler {
             
             // Iterate over all the RR's. Each iteration consists of looking at one
             // RR, and storing it into allRecords at the end.
-
+            
             // Create all ANSWER RR's
+            if (verboseTracing) {
+                // System.out.println("\n\nQuery ID     " + transactionID);
+                System.out.println("Response ID: " + responseID + " Authoritative = " + ((AA==1)?"true":"false"));
+                System.out.println("  Answers (" + ANCOUNT + ")");
+            }
             for (int i = 0; i < ANCOUNT; i++) {
                 ResourceRecord answerRecord = createResourceRecord(dataInputStream, responseBuffer);
                 allRecords.add(answerRecord);
                 cache.addResult(answerRecord);
             }
 
+            
             // Create all AUTHORITY RR's
+            if (verboseTracing) {
+                System.out.println("  Nameservers (" + NSCOUNT + ")");
+            }
             for (int i = 0; i < NSCOUNT; i++) {
                 ResourceRecord authorityRecord = createResourceRecord(dataInputStream, responseBuffer);
                 allRecords.add(authorityRecord);
@@ -285,13 +307,18 @@ public class DNSQueryHandler {
             }
 
             // Create all ADDITIONAL RR's
+            if (verboseTracing) {
+                System.out.println("  Additional Information (" + ARCOUNT + ")");
+            }
             for (int i = 0; i < ARCOUNT; i++) {
                 ResourceRecord additionalRecord = createResourceRecord(dataInputStream, responseBuffer);
                 allRecords.add(additionalRecord);
                 cache.addResult(additionalRecord);
             }
+
+            // printFromDecode(allRecords, ANCOUNT, NSCOUNT, ARCOUNT, AA); 
         } catch (IOException e) {
-            // no bytes to read
+            // TODO
         }
 
         return allRecords;
@@ -304,11 +331,13 @@ public class DNSQueryHandler {
      * @param rtype  The type of the record to be printed
      */
     private static void verbosePrintResourceRecord(ResourceRecord record, int rtype) {
-        if (verboseTracing)
+        if (verboseTracing) {
             System.out.format("       %-30s %-10d %-4s %s\n", record.getHostName(),
                     record.getTTL(),
                     record.getType() == RecordType.OTHER ? rtype : record.getType(),
                     record.getTextResult());
+        }
+            
     }
 }
 
