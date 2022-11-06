@@ -55,7 +55,6 @@ public class DNSQueryHandler {
                                                       DNSNode node) throws IOException {
         ByteArrayOutputStream outputStream = new ByteArrayOutputStream();
         DataOutputStream dataStream = new DataOutputStream(outputStream);
-
         short id = (short)random.nextInt(65535);        
         // HEADER
         // -----------------
@@ -115,6 +114,12 @@ public class DNSQueryHandler {
             socket.receive(responsePacket);
         }
 
+        // for (int i = 0; i < response.length; i++) {
+        //     System.out.print(Integer.toHexString(response[i] & 0xFF) + " ");
+        // }
+        // System.out.println();
+
+
         ByteBuffer responseMessage = ByteBuffer.wrap(response);
         return new DNSServerResponse(responseMessage, id);
     }
@@ -125,7 +130,7 @@ public class DNSQueryHandler {
         ByteArrayInputStream byteArrayInputStream = new ByteArrayInputStream(responseBuffer.array());
         DataInputStream dataInputStream = new DataInputStream(byteArrayInputStream);
         try {
-            for (byte i = 0; i < offset; i++) {
+            for (int i = 0; i < (offset & 0xFF); i++) {
                 dataInputStream.readByte();
             }
             byte currentByte = dataInputStream.readByte();
@@ -148,7 +153,7 @@ public class DNSQueryHandler {
     // such as www.cs
     public static String convertBytesToFDQN(List<Byte> list) {
         String domain = "";
-        if (list.size() == 0) {
+        if (list.isEmpty()) {
             return domain;
         }
 
@@ -167,6 +172,8 @@ public class DNSQueryHandler {
         return domain;
     } 
 
+    // Create a new ResourceRecord by extracting data from dataInputStream and the responseBuffer
+    // @return the new ResourceRecord
     public static ResourceRecord createResourceRecord(DataInputStream dataInputStream, ByteBuffer responseBuffer) throws IOException {
         byte answerByte = dataInputStream.readByte();
         String name = "";
@@ -175,7 +182,6 @@ public class DNSQueryHandler {
             flattenPointersAndCollectBytes(responseBuffer, dataInputStream.readByte(), bytes);
             name = convertBytesToFDQN(bytes);
         }
-        
         short TYPE = dataInputStream.readShort();
         short CLASS = dataInputStream.readShort();
         int TTL = dataInputStream.readInt();
@@ -186,8 +192,8 @@ public class DNSQueryHandler {
         InetAddress addr = null;
         if (RecordType.getByCode(TYPE) == RecordType.A || RecordType.getByCode(TYPE) == RecordType.AAAA) {
             byte[] ipAddr = new byte[RDLENGTH];
-            for (int z = 0; z < RDLENGTH; z++) {
-                ipAddr[z] = dataInputStream.readByte();
+            for (int i = 0; i < RDLENGTH; i++) {
+                ipAddr[i] = dataInputStream.readByte();
             }
 
             addr = InetAddress.getByAddress(ipAddr);
@@ -197,12 +203,12 @@ public class DNSQueryHandler {
         } else if (RecordType.getByCode(TYPE) == RecordType.CNAME || RecordType.getByCode(TYPE) == RecordType.NS) {
             ArrayList<Byte> bytesArray = new ArrayList<>();
 
-            for (int z = 0; z < RDLENGTH; z++) {
+            for (int i = 0; i < RDLENGTH; i++) {
                 byte currByte = dataInputStream.readByte();
                 if (currByte == (byte)0xc0) {
                     byte offset = dataInputStream.readByte();
                     flattenPointersAndCollectBytes(responseBuffer, offset, bytesArray);
-                    z++;
+                    i++;
                 } else {
                     bytesArray.add(currByte);
                 }                            
@@ -211,8 +217,11 @@ public class DNSQueryHandler {
             ResourceRecord newRecord = new ResourceRecord(name, RecordType.getByCode(TYPE), TTL, textResult);
             verbosePrintResourceRecord(newRecord, TYPE);
             return newRecord;
+        } else if (RecordType.getByCode(TYPE) == RecordType.SOA) {
+            ResourceRecord newRecord = new ResourceRecord(name, RecordType.getByCode(TYPE), TTL, "----");
+            verbosePrintResourceRecord(newRecord, TYPE);
+            return newRecord;
         }
-        
         return null;
     }
 
@@ -285,43 +294,46 @@ public class DNSQueryHandler {
             
             // Create all ANSWER RR's
             if (verboseTracing) {
-                // System.out.println("\n\nQuery ID     " + transactionID);
                 System.out.println("Response ID: " + responseID + " Authoritative = " + ((AA==1)?"true":"false"));
                 System.out.println("  Answers (" + ANCOUNT + ")");
             }
-            for (int i = 0; i < ANCOUNT; i++) {
-                ResourceRecord answerRecord = createResourceRecord(dataInputStream, responseBuffer);
-                allRecords.add(answerRecord);
-                cache.addResult(answerRecord);
-            }
+            handleAllRecords(ANCOUNT, allRecords, AA, responseBuffer, dataInputStream, cache);
 
-            
             // Create all AUTHORITY RR's
             if (verboseTracing) {
                 System.out.println("  Nameservers (" + NSCOUNT + ")");
             }
-            for (int i = 0; i < NSCOUNT; i++) {
-                ResourceRecord authorityRecord = createResourceRecord(dataInputStream, responseBuffer);
-                allRecords.add(authorityRecord);
-                cache.addResult(authorityRecord);
-            }
+            handleAllRecords(NSCOUNT, allRecords, AA, responseBuffer, dataInputStream, cache);
 
             // Create all ADDITIONAL RR's
             if (verboseTracing) {
                 System.out.println("  Additional Information (" + ARCOUNT + ")");
             }
-            for (int i = 0; i < ARCOUNT; i++) {
-                ResourceRecord additionalRecord = createResourceRecord(dataInputStream, responseBuffer);
-                allRecords.add(additionalRecord);
-                cache.addResult(additionalRecord);
-            }
+            handleAllRecords(ARCOUNT, allRecords, AA, responseBuffer, dataInputStream, cache);
 
-            // printFromDecode(allRecords, ANCOUNT, NSCOUNT, ARCOUNT, AA); 
         } catch (IOException e) {
             // TODO
         }
 
         return allRecords;
+    }
+
+    private static void handleAllRecords(
+        int count, Set<ResourceRecord> allRecords, int isAuthoritative,
+        ByteBuffer responseBuffer, DataInputStream dataInputStream, DNSCache cache) throws IOException{
+        for (int i = 0; i < count; i++) {
+            ResourceRecord record = createResourceRecord(dataInputStream, responseBuffer);
+            if (record.getType() != RecordType.SOA) {
+                allRecords.add(record);
+            }
+            if (isAuthoritative == 1) {
+            //    for (ResourceRecord rr : allRecords) {
+            //        if (rr.)
+            //    }
+            //    System.out.println();
+                cache.addResult(record);
+            }
+        }
     }
 
     /**
