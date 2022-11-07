@@ -114,10 +114,10 @@ public class DNSQueryHandler {
             socket.receive(responsePacket);
         }
 
-        // for (int i = 0; i < response.length; i++) {
-        //     System.out.print(Integer.toHexString(response[i] & 0xFF) + " ");
-        // }
-        // System.out.println();
+//         for (int i = 0; i < response.length; i++) {
+//             System.out.print(Integer.toHexString(response[i] & 0xFF) + " ");
+//         }
+//         System.out.println();
 
 
         ByteBuffer responseMessage = ByteBuffer.wrap(response);
@@ -177,11 +177,22 @@ public class DNSQueryHandler {
     public static ResourceRecord createResourceRecord(DataInputStream dataInputStream, ByteBuffer responseBuffer) throws IOException {
         byte answerByte = dataInputStream.readByte();
         String name = "";
+        List<Byte> bytes = new ArrayList<>();
         if (answerByte == (byte)0xc0) {
-            List<Byte> bytes = new ArrayList<>();
             flattenPointersAndCollectBytes(responseBuffer, dataInputStream.readByte(), bytes);
-            name = convertBytesToFDQN(bytes);
+        } else {
+            while(answerByte != (byte)0) {
+                if (answerByte == (byte)0xc0) {
+                    flattenPointersAndCollectBytes(responseBuffer, dataInputStream.readByte(), bytes);
+                    break;
+                } else {
+                    bytes.add(answerByte);
+                }
+                answerByte = dataInputStream.readByte();
+            }
         }
+        name = convertBytesToFDQN(bytes);
+        
         short TYPE = dataInputStream.readShort();
         short CLASS = dataInputStream.readShort();
         int TTL = dataInputStream.readInt();
@@ -217,12 +228,11 @@ public class DNSQueryHandler {
             ResourceRecord newRecord = new ResourceRecord(name, RecordType.getByCode(TYPE), TTL, textResult);
             verbosePrintResourceRecord(newRecord, TYPE);
             return newRecord;
-        } else if (RecordType.getByCode(TYPE) == RecordType.SOA) {
+        } else {
             ResourceRecord newRecord = new ResourceRecord(name, RecordType.getByCode(TYPE), TTL, "----");
             verbosePrintResourceRecord(newRecord, TYPE);
             return newRecord;
         }
-        return null;
     }
 
     /**
@@ -288,7 +298,6 @@ public class DNSQueryHandler {
             QTYPE = dataInputStream.readShort();
             QCLASS = dataInputStream.readShort();
             // now starts reading the DNS answer section
-            
             // Iterate over all the RR's. Each iteration consists of looking at one
             // RR, and storing it into allRecords at the end.
             
@@ -297,19 +306,19 @@ public class DNSQueryHandler {
                 System.out.println("Response ID: " + responseID + " Authoritative = " + ((AA==1)?"true":"false"));
                 System.out.println("  Answers (" + ANCOUNT + ")");
             }
-            handleAllRecords(ANCOUNT, allRecords, AA, responseBuffer, dataInputStream, cache);
+            handleAllRecords(ANCOUNT, allRecords, AA, responseBuffer, dataInputStream, cache, true);
 
             // Create all AUTHORITY RR's
             if (verboseTracing) {
                 System.out.println("  Nameservers (" + NSCOUNT + ")");
             }
-            handleAllRecords(NSCOUNT, allRecords, AA, responseBuffer, dataInputStream, cache);
+            handleAllRecords(NSCOUNT, allRecords, AA, responseBuffer, dataInputStream, cache, false);
 
             // Create all ADDITIONAL RR's
             if (verboseTracing) {
                 System.out.println("  Additional Information (" + ARCOUNT + ")");
             }
-            handleAllRecords(ARCOUNT, allRecords, AA, responseBuffer, dataInputStream, cache);
+            handleAllRecords(ARCOUNT, allRecords, AA, responseBuffer, dataInputStream, cache, true);
 
         } catch (IOException e) {
             // TODO
@@ -320,17 +329,18 @@ public class DNSQueryHandler {
 
     private static void handleAllRecords(
         int count, Set<ResourceRecord> allRecords, int isAuthoritative,
-        ByteBuffer responseBuffer, DataInputStream dataInputStream, DNSCache cache) throws IOException{
+        ByteBuffer responseBuffer, DataInputStream dataInputStream, DNSCache cache, boolean cacheable) throws IOException{
         for (int i = 0; i < count; i++) {
             ResourceRecord record = createResourceRecord(dataInputStream, responseBuffer);
             if (record.getType() != RecordType.SOA) {
                 allRecords.add(record);
             }
-            if (isAuthoritative == 1) {
-            //    for (ResourceRecord rr : allRecords) {
-            //        if (rr.)
-            //    }
-            //    System.out.println();
+            if (isAuthoritative == 1 && cacheable) {
+//                for (ResourceRecord rr : allRecords) {
+//                    if (record.getType() == RecordType.CNAME && record.getHostName().equals(rr.getTextResult())) {
+//                        rr = new ResourceRecord(rr.getHostName(), record.getType(), record.getTTL(), record.getTextResult());
+//                    }
+//                }
                 cache.addResult(record);
             }
         }

@@ -172,8 +172,9 @@ public class DNSLookupService {
         }
 
         // TODO (PART 1/2): Implement this
-        retrieveResultsFromServer(node, rootServer);
-//        node = new DNSNode(node.getHostName(), RecordType.CNAME);
+        if (!cacheContainsNode(node, cache.getCachedResults(node))) {
+            retrieveResultsFromServer(node, rootServer);
+        }
         return cache.getCachedResults(node);
     }
 
@@ -211,48 +212,39 @@ public class DNSLookupService {
      */
     private static void queryNextLevel(DNSNode node, Set<ResourceRecord> nameservers) {
         // If the query responds with CNAME, then resolve that CNAME and return the IP for it instead
-        Stack<DNSNode> currentQueries = new Stack<>();
-        currentQueries.add(node);
-        for (int i = 0; i < 10 && !nameservers.isEmpty(); i++) {
+//        Stack<DNSNode> currentQueries = new Stack<>();
+//        currentQueries.add(node);
+        for (int i = 0; i < 10 && !cacheContainsNode(node, cache.getCachedResults(node)); i++) {
             try {
                 InetAddress server = null;
                 for (ResourceRecord rr : nameservers) {
                     if (rr.getType() == RecordType.A) {
                         server = rr.getInetResult();
                     }
-                    if (rr.getHostName().equals(currentQueries.peek().getHostName())) {
-                        currentQueries.pop();
-                        if (currentQueries.isEmpty()) {
-                            break;
-                        }
-                    }
                 }
 
                 if (server == null) {
                     server = rootServer;
-                    for (ResourceRecord rr : nameservers) {
-                        if (rr.getType() == RecordType.NS) {
-                            currentQueries.push(new DNSNode(rr.getTextResult(), rr.getType()));
-                            break;
-                        }
-                    }
                 }
-
-                if (currentQueries.isEmpty()) {
-                    break;
-                } else {
-                    node = new DNSNode(currentQueries.peek().getHostName(), currentQueries.peek().getType());
-                }
-
                 byte[] message = new byte[512]; // query is no longer than 512 bytes
                 DNSServerResponse serverResponse = DNSQueryHandler.buildAndSendQuery(message, server, node);
-    
+
                 nameservers = DNSQueryHandler.decodeAndCacheResponse(serverResponse.getTransactionID(),
-                        serverResponse.getResponse(),
-                        cache);
-            
-            } catch (IOException | NullPointerException ignored){}
+                    serverResponse.getResponse(), cache);
+
+            } catch (IOException e) {
+                throw new RuntimeException(e);
+            }
         }
+    }
+
+    private static boolean cacheContainsNode(DNSNode node, Set<ResourceRecord> records) {
+        for (ResourceRecord record : records) {
+            if (record.getNode().equals(node)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /**
@@ -271,3 +263,4 @@ public class DNSLookupService {
         }
     }
 }
+
