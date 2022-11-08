@@ -14,6 +14,7 @@ public class DNSQueryHandler {
     private static final int DEFAULT_DNS_PORT = 53;
     private static DatagramSocket socket;
     private static boolean verboseTracing = false;
+    private static DNSNode node;
 
     private static final Random random = new Random();
 
@@ -55,7 +56,8 @@ public class DNSQueryHandler {
                                                       DNSNode node) throws IOException {
         ByteArrayOutputStream outputStream = new ByteArrayOutputStream();
         DataOutputStream dataStream = new DataOutputStream(outputStream);
-        short id = (short)random.nextInt(65535);        
+        DNSQueryHandler.node = node;
+        short id = (short)random.nextInt(65535);
         // HEADER
         // -----------------
         // ID
@@ -93,7 +95,7 @@ public class DNSQueryHandler {
 
         if (verboseTracing) {
             System.out.print("\n\n");
-            System.out.println("Query ID     "+ id + " " + node.getHostName() + " " + node.getType() + " --> " + server.getHostAddress());
+            System.out.println("Query ID     "+ (id & 0xFFFF) + " " + node.getHostName() + " " + node.getType() + " --> " + server.getHostAddress());
         }
         // Send the query
         DatagramPacket requestPacket = new DatagramPacket(message, message.length, server, DEFAULT_DNS_PORT);
@@ -108,8 +110,8 @@ public class DNSQueryHandler {
             // If the query times out, re-send it one more time before failing    
             if (verboseTracing) {
                 System.out.print("\n\n");
-                System.out.println("Query ID     "+ id + " " + node.getHostName() + " " + node.getType() + " --> " + server.getHostAddress());
-            }       
+                System.out.println("Query ID     "+ (id & 0xFFFF) + " " + node.getHostName() + " " + node.getType() + " --> " + server.getHostAddress());
+            }
             socket.send(requestPacket);
             socket.receive(responsePacket);
         }
@@ -126,17 +128,18 @@ public class DNSQueryHandler {
 
     // Call this method when encountering a pointer in the response. It will dereference each nested
     // pointer and store the values into the array. 
-    private static void flattenPointersAndCollectBytes(ByteBuffer responseBuffer, byte offset, List<Byte> bytesArray) {
+    private static void flattenPointersAndCollectBytes(ByteBuffer responseBuffer, short offset, List<Byte> bytesArray) {
         ByteArrayInputStream byteArrayInputStream = new ByteArrayInputStream(responseBuffer.array());
         DataInputStream dataInputStream = new DataInputStream(byteArrayInputStream);
         try {
-            for (int i = 0; i < (offset & 0xFF); i++) {
+            for (int i = 0; i < (offset & 0xFFFF); i++) {
                 dataInputStream.readByte();
             }
             byte currentByte = dataInputStream.readByte();
             while(currentByte != (byte)0) {
-                if (currentByte == (byte)0xc0) {
-                    flattenPointersAndCollectBytes(responseBuffer, dataInputStream.readByte(), bytesArray);
+                if (isPointer(currentByte)) {
+                    short newOffset = getOffset(currentByte, dataInputStream.readByte());
+                    flattenPointersAndCollectBytes(responseBuffer, newOffset, bytesArray);
                     break;
                 } else {
                     bytesArray.add(currentByte);
@@ -170,7 +173,7 @@ public class DNSQueryHandler {
             }
         }
         return domain;
-    } 
+    }
 
     // Create a new ResourceRecord by extracting data from dataInputStream and the responseBuffer
     // @return the new ResourceRecord
@@ -178,12 +181,14 @@ public class DNSQueryHandler {
         byte answerByte = dataInputStream.readByte();
         String name = "";
         List<Byte> bytes = new ArrayList<>();
-        if (answerByte == (byte)0xc0) {
-            flattenPointersAndCollectBytes(responseBuffer, dataInputStream.readByte(), bytes);
+        if (isPointer(answerByte)) {
+            short offset = getOffset(answerByte, dataInputStream.readByte());
+            flattenPointersAndCollectBytes(responseBuffer, offset, bytes);
         } else {
             while(answerByte != (byte)0) {
-                if (answerByte == (byte)0xc0) {
-                    flattenPointersAndCollectBytes(responseBuffer, dataInputStream.readByte(), bytes);
+                if (isPointer(answerByte)) {
+                    short offset = getOffset(answerByte, dataInputStream.readByte());
+                    flattenPointersAndCollectBytes(responseBuffer, offset, bytes);
                     break;
                 } else {
                     bytes.add(answerByte);
@@ -192,7 +197,7 @@ public class DNSQueryHandler {
             }
         }
         name = convertBytesToFDQN(bytes);
-        
+
         short TYPE = dataInputStream.readShort();
         short CLASS = dataInputStream.readShort();
         int TTL = dataInputStream.readInt();
@@ -216,13 +221,13 @@ public class DNSQueryHandler {
 
             for (int i = 0; i < RDLENGTH; i++) {
                 byte currByte = dataInputStream.readByte();
-                if (currByte == (byte)0xc0) {
-                    byte offset = dataInputStream.readByte();
+                if (isPointer(currByte)) {
+                    short offset = getOffset(currByte, dataInputStream.readByte());
                     flattenPointersAndCollectBytes(responseBuffer, offset, bytesArray);
                     i++;
                 } else {
                     bytesArray.add(currByte);
-                }                            
+                }
             }
             textResult += convertBytesToFDQN(bytesArray);
             ResourceRecord newRecord = new ResourceRecord(name, RecordType.getByCode(TYPE), TTL, textResult);
@@ -233,6 +238,20 @@ public class DNSQueryHandler {
             verbosePrintResourceRecord(newRecord, TYPE);
             return newRecord;
         }
+    }
+
+    // @return true if the byte begins with 11 from the leading bit side
+    private static boolean isPointer(byte b) {
+        return (b & (byte)0xc0) == (byte)0xc0;
+    }
+
+    // @param pointer is the pointer byte
+    // @param nextByte is the byte after the pointer
+    // Both bytes should be concatenated
+    private static short getOffset(byte pointer, byte nextByte) {
+        short output = (short) (pointer & (byte)0x3F);
+        short off = (short)(nextByte & (short)0x00FF);
+        return (short)((output << 8) | off);
     }
 
     /**
@@ -254,7 +273,7 @@ public class DNSQueryHandler {
         // Header Section Flags
         int QR, OPCode, AA, TC, RD, RA, Z, RCODE = 0;
         int QDCOUNT, ANCOUNT, NSCOUNT, ARCOUNT = 0;
-        
+
         // Question Section
         short QTYPE, QCLASS;
 
@@ -270,22 +289,22 @@ public class DNSQueryHandler {
             short secondHeaderRow = dataInputStream.readShort();
             // check flags using bit shifting
             QR = (secondHeaderRow & 0b1000000000000000) >>> 15;
-            
+
             OPCode = (secondHeaderRow & 0b0111100000000000) >>> 11;
-            
+
             // AA should be 1 to be authorative
             AA = (secondHeaderRow & 0b0000010000000000) >>> 10; // need to report
             TC = (secondHeaderRow & 0b0000001000000000) >>> 9;
-            
+
             RD = (secondHeaderRow & 0b0000000100000000) >>> 8;
             RA = (secondHeaderRow & 0b0000000010000000) >>> 7;
-            
+
             Z = (secondHeaderRow & 0b0000000001110000) >>> 4;
             RCODE = secondHeaderRow & 0b0000000000001111;
             if (QR != 1 || OPCode != 0 || TC != 0 || Z != 0 || RCODE != 0) {
+                DNSLookupService.answerReceived = true;
                 return allRecords;
             }
-
             // next rows of the DNS header
             QDCOUNT = dataInputStream.readShort();
             ANCOUNT = dataInputStream.readShort();
@@ -300,25 +319,25 @@ public class DNSQueryHandler {
             // now starts reading the DNS answer section
             // Iterate over all the RR's. Each iteration consists of looking at one
             // RR, and storing it into allRecords at the end.
-            
+
             // Create all ANSWER RR's
             if (verboseTracing) {
-                System.out.println("Response ID: " + responseID + " Authoritative = " + ((AA==1)?"true":"false"));
+                System.out.println("Response ID: " + (responseID & 0xFFFF) + " Authoritative = " + ((AA==1)?"true":"false"));
                 System.out.println("  Answers (" + ANCOUNT + ")");
             }
-            handleAllRecords(ANCOUNT, allRecords, AA, responseBuffer, dataInputStream, cache, true);
+            handleAllRecords(ANCOUNT, allRecords, AA, responseBuffer, dataInputStream, cache, "answer");
 
             // Create all AUTHORITY RR's
             if (verboseTracing) {
                 System.out.println("  Nameservers (" + NSCOUNT + ")");
             }
-            handleAllRecords(NSCOUNT, allRecords, AA, responseBuffer, dataInputStream, cache, false);
+            handleAllRecords(NSCOUNT, allRecords, AA, responseBuffer, dataInputStream, cache, "authority");
 
             // Create all ADDITIONAL RR's
             if (verboseTracing) {
                 System.out.println("  Additional Information (" + ARCOUNT + ")");
             }
-            handleAllRecords(ARCOUNT, allRecords, AA, responseBuffer, dataInputStream, cache, true);
+            handleAllRecords(ARCOUNT, allRecords, AA, responseBuffer, dataInputStream, cache, "additional");
 
         } catch (IOException e) {
             // TODO
@@ -327,23 +346,52 @@ public class DNSQueryHandler {
         return allRecords;
     }
 
-    private static void handleAllRecords(
-        int count, Set<ResourceRecord> allRecords, int isAuthoritative,
-        ByteBuffer responseBuffer, DataInputStream dataInputStream, DNSCache cache, boolean cacheable) throws IOException{
-        for (int i = 0; i < count; i++) {
-            ResourceRecord record = createResourceRecord(dataInputStream, responseBuffer);
-            if (record.getType() != RecordType.SOA) {
-                allRecords.add(record);
-            }
-            if (isAuthoritative == 1 && cacheable) {
-//                for (ResourceRecord rr : allRecords) {
-//                    if (record.getType() == RecordType.CNAME && record.getHostName().equals(rr.getTextResult())) {
-//                        rr = new ResourceRecord(rr.getHostName(), record.getType(), record.getTTL(), record.getTextResult());
-//                    }
-//                }
-                cache.addResult(record);
+    private static void resolveCNAME(DNSCache cache, Set<ResourceRecord> allRecords) {
+        long ttl = 0;
+        RecordType rt = null;
+        String text = "";
+        boolean domainIsPresent = false;
+        for (ResourceRecord rr: allRecords) {
+            if (rr.getType() == RecordType.A || rr.getType() == RecordType.AAAA) {
+                ttl = rr.getTTL();
+                rt = rr.getType();
+                text = rr.getTextResult();
+                domainIsPresent = true;
             }
         }
+        Set<ResourceRecord> tmpSet = new HashSet<>();
+        if (domainIsPresent) {
+            for (ResourceRecord rr: allRecords) {
+                if (rr.getType() == RecordType.CNAME || rr.getType() == RecordType.NS) {
+                    ResourceRecord record = new ResourceRecord(rr.getHostName(), rt, ttl, text);
+                    tmpSet.add(record);
+                    cache.addResult(record);
+                }
+            }
+        }
+        allRecords.addAll(tmpSet);
+    }
+
+    private static void handleAllRecords(
+        int count, Set<ResourceRecord> allRecords, int isAuthoritative,
+        ByteBuffer responseBuffer, DataInputStream dataInputStream, DNSCache cache, String recordType) throws IOException{
+        for (int i = 0; i < count; i++) {
+            ResourceRecord record = createResourceRecord(dataInputStream, responseBuffer);
+            if (recordType.equals("answer") || recordType.equals("additional")) {
+                cache.addResult(record);
+            }
+            allRecords.add(record);
+            if ((record.getType() == RecordType.SOA) || isAuthoritative == 1 && recordType.equals("answer") &&
+                    (record.getType() == RecordType.A || record.getType() == RecordType.AAAA)) {
+                // Return a flag to DNSLookup to signal that the lookup should stop since answer has been found
+                DNSLookupService.answerReceived = true;
+            } else if (record.getNode().equals(DNSQueryHandler.node) &&
+                    (record.getType() == RecordType.A || record.getType() == RecordType.AAAA)) {
+                DNSLookupService.cnameResponseReceived = true;
+                DNSLookupService.cnameServer = record.getInetResult();
+            }
+        }
+        resolveCNAME(cache, allRecords);
     }
 
     /**
@@ -359,7 +407,6 @@ public class DNSQueryHandler {
                     record.getType() == RecordType.OTHER ? rtype : record.getType(),
                     record.getTextResult());
         }
-            
     }
 }
 

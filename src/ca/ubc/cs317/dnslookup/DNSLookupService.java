@@ -13,6 +13,11 @@ public class DNSLookupService {
     private static final int MAX_INDIRECTION_LEVEL = 10;
     private static InetAddress rootServer;
     private static DNSCache cache = DNSCache.getInstance();
+    public static boolean answerReceived = false;
+    private static boolean cnameRequestReceived = false;
+    public static boolean cnameResponseReceived = false;
+    public static InetAddress cnameServer;
+    private static String cnameHostName = "";
 
     /**
      * Main function, called when program is first invoked.
@@ -20,7 +25,6 @@ public class DNSLookupService {
      * @param args list of arguments specified in the command line.
      */
     public static void main(String[] args) {
-
         if (args.length == 2 && args[1].equals("-p1")) {
             p1Flag = true;
         } else if (args.length != 1) {
@@ -32,6 +36,7 @@ public class DNSLookupService {
 
         try {
             rootServer = InetAddress.getByName(args[0]);
+            cnameServer = rootServer;
             System.out.println("Root DNS server is: " + rootServer.getHostAddress());
         } catch (UnknownHostException e) {
             System.err.println("Invalid root server (" + e.getMessage() + ").");
@@ -171,10 +176,25 @@ public class DNSLookupService {
             return Collections.emptySet();
         }
 
-        // TODO (PART 1/2): Implement this
-        if (!cacheContainsNode(node, cache.getCachedResults(node))) {
-            retrieveResultsFromServer(node, rootServer);
+        // Keep track of all CNAME/NS queries in a stack so they can be re-looked up repeatedly
+        Stack<DNSNode> stack = new Stack<>();
+        while (!answerReceived && indirectionLevel <= MAX_INDIRECTION_LEVEL) {
+            if (cnameResponseReceived) {
+                cnameResponseReceived = false;
+                node = stack.pop();
+            }
+            if (cnameRequestReceived) {
+                cnameRequestReceived = false;
+                stack.push(node);
+                node = new DNSNode(cnameHostName, node.getType());
+            }
+
+            if ((!stack.isEmpty()) || (!cacheContainsNode(node, cache.getCachedResults(node)))) {
+                retrieveResultsFromServer(node, cnameServer);
+            }
+            indirectionLevel++;
         }
+        answerReceived = false;
         return cache.getCachedResults(node);
     }
 
@@ -191,7 +211,6 @@ public class DNSLookupService {
 
         try {
             DNSServerResponse serverResponse = DNSQueryHandler.buildAndSendQuery(message, server, node);
-
             Set<ResourceRecord> nameservers = DNSQueryHandler.decodeAndCacheResponse(serverResponse.getTransactionID(),
                     serverResponse.getResponse(),
                     cache);
@@ -212,9 +231,7 @@ public class DNSLookupService {
      */
     private static void queryNextLevel(DNSNode node, Set<ResourceRecord> nameservers) {
         // If the query responds with CNAME, then resolve that CNAME and return the IP for it instead
-//        Stack<DNSNode> currentQueries = new Stack<>();
-//        currentQueries.add(node);
-        for (int i = 0; i < 10 && !cacheContainsNode(node, cache.getCachedResults(node)); i++) {
+        for (int i = 0; i < 10 && !answerReceived && !cnameResponseReceived; i++) {
             try {
                 InetAddress server = null;
                 for (ResourceRecord rr : nameservers) {
@@ -222,13 +239,17 @@ public class DNSLookupService {
                         server = rr.getInetResult();
                     }
                 }
-
                 if (server == null) {
-                    server = rootServer;
+                    for (ResourceRecord rr : nameservers) {
+                        if (rr.getType() == RecordType.NS || rr.getType() == RecordType.CNAME) {
+                            cnameHostName = rr.getTextResult();
+                            cnameRequestReceived = true;
+                        }
+                    }
+                    break;
                 }
                 byte[] message = new byte[512]; // query is no longer than 512 bytes
                 DNSServerResponse serverResponse = DNSQueryHandler.buildAndSendQuery(message, server, node);
-
                 nameservers = DNSQueryHandler.decodeAndCacheResponse(serverResponse.getTransactionID(),
                     serverResponse.getResponse(), cache);
 
